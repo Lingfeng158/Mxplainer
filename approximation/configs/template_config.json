@@ -1,0 +1,14 @@
+{
+  "target_lr": 0.001,
+  "lr_decay": 0.985,
+  "splitRatio": 0.97,
+  "batchSize": 256,
+  "epoch_split": 40,
+  "epoch_total": 4,
+  "n_gpu": 1,
+  "main_gpu_id": 4,
+  "number_warmup_epochs": 8,
+  "num_dataloader": 2,
+  "data_folder_name": "sl_prep_revised2_QQR_dist6",
+  "note": "ablation_base_6"
+}

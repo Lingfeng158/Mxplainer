@@ -1,0 +1,78 @@
+Match 61602cb45ddc087351c04362
+Wind 3
+Player 0 Deal T9 T7 F2 B6 T1 W8 W4 T8 B7 B3 T2 W1 W9
+Player 1 Deal T8 W9 W6 F4 T6 F1 B5 W8 J1 W4 B8 T3 B8
+Player 2 Deal J1 F3 B6 W6 B4 B5 T5 W1 B9 T5 B9 T5 J2
+Player 3 Deal W7 W6 W9 W2 B9 B1 B2 W7 T6 W7 T3 B7 J2
+Player 0 Draw W3
+Player 0 Play F2
+Player 1 Draw J3
+Player 1 Play W8
+Player 2 Draw T4
+Player 2 Play J1
+Player 3 Draw T4
+Player 3 Play J2
+Player 0 Draw W6
+Player 0 Play B3
+Player 1 Draw B4
+Player 1 Play T8
+Player 2 Draw T5
+Player 2 Play F3
+Player 3 Draw W3
+Player 3 Play W9
+Player 0 Draw T1
+Player 0 Play T2
+Player 1 Draw F2
+Player 1 Play B4
+Player 2 Draw B7
+Player 2 Play J2
+Player 3 Draw T8
+Player 3 Play B1
+Player 0 Draw B6
+Player 0 Play B6
+Player 1 Draw B7
+Player 1 Play B7
+Player 2 Draw T6
+Player 2 Play W1
+Player 3 Chi W2
+Player 3 Play B2
+Player 0 Draw W2
+Player 0 Play W9
+Player 1 Draw T8
+Player 1 Play T8
+Player 2 Draw W1
+Player 2 Play W1
+Player 3 Draw J1
+Player 3 Play J1
+Player 0 Draw W8
+Player 0 Play W8
+Player 1 Draw F3
+Player 1 Play B8
+Player 2 Draw J1
+Player 2 Play J1
+Player 3 Draw B3
+Player 3 Play T3
+Player 0 Draw B6
+Player 0 Play B6
+Player 1 Draw T9
+Player 1 Play W6
+Player 2 Draw T2
+Player 2 Play T2
+Player 3 Draw W5
+Player 3 Play B3
+Player 0 Draw T3
+Player 0 Play T3
+Player 1 Draw B3
+Player 1 Play B3
+Player 2 Draw B2
+Player 2 Play W6
+Player 3 Draw W5
+Player 3 Play W5
+Player 0 Draw B2
+Player 0 Play B2
+Player 1 Draw B5
+Player 1 Play B5
+Player 2 Draw B3
+Player 2 Hu B5
+Fan 14 不求人*1+和绝张*1+四归一*1+连六*1+缺一门*1+无字*1+嵌张*1
+Score -22 -22 66 -22

@@ -1,0 +1,2 @@
+a-d: filtered with min init_dist >=2
+e-f: filtered with init_dist == 3 or init_dist == 4

@@ -1,0 +1,391 @@
+from dataset import MahjongSLDataset
+from model_slim import MahJongNetBatchedRevised
+import torch
+from torch.utils.data import DataLoader
+from torch.optim.lr_scheduler import SequentialLR, LambdaLR, ExponentialLR
+import torch.nn.functional as F
+from torch.utils.tensorboard import SummaryWriter
+import statistics
+from tqdm import tqdm
+import datetime
+import os
+import sys
+import json
+import shutil
+
+validation_acc = 0.0
+validation_acc_top2 = 0.0
+validation_acc_top3 = 0.0
+
+
+def prepare_device(n_gpu_use, main_id=0):
+    """
+    setup GPU device if available. get gpu device indices which are used for DataParallel
+    main_id for specify main gpu
+    """
+    n_gpu = torch.cuda.device_count()
+    if n_gpu_use > 0 and n_gpu == 0:
+        print(
+            "Warning: There's no GPU available on this machine,"
+            "training will be performed on CPU."
+        )
+        n_gpu_use = 0
+    if n_gpu_use > n_gpu:
+        print(
+            f"Warning: The number of GPU's configured to use is {n_gpu_use}, but only {n_gpu} are "
+            "available on this machine."
+        )
+        n_gpu_use = n_gpu
+    device = torch.device("cuda:%d" % main_id if n_gpu_use > 0 else "cpu")
+    list_ids = list(range(n_gpu_use))
+    return device, list_ids
+
+
+def loss_acc_batched(
+    meta, index_list_plus_one, label_action, label_tile, action, tile_sel, fan_coeff
+):
+    # label_action, label_tile = label_action.float(), label_tile.float()
+
+    meta_as_index = index_list_plus_one * meta
+    reverse_meta_as_index = index_list_plus_one * (1 - meta)
+    meta_as_index = meta_as_index[meta_as_index > 0] - 1
+    reverse_meta_as_index = reverse_meta_as_index[reverse_meta_as_index > 0] - 1
+    term1 = F.cross_entropy(action[meta_as_index], label_action[meta_as_index]) * len(
+        meta_as_index
+    )
+    truth_label_index_action = label_action[meta_as_index].argmax(dim=1)
+    acc1 = sum(action[meta_as_index].argmax(dim=1) == truth_label_index_action)
+    _, top3_index = torch.topk(action[meta_as_index], 3)
+    acc1_top2 = 0
+    for id in range(0, 2):
+        acc1_top2 += sum(top3_index[:, id] == truth_label_index_action)
+    acc1_top3 = 0
+    for id in range(0, 3):
+        acc1_top3 += sum(top3_index[:, id] == truth_label_index_action)
+    acc1_total = len(meta_as_index)
+
+    term2 = F.cross_entropy(
+        tile_sel[reverse_meta_as_index], label_tile[reverse_meta_as_index]
+    ) * len(reverse_meta_as_index)
+    truth_label_index_tile = label_tile[reverse_meta_as_index].argmax(dim=1)
+    acc2 = sum(tile_sel[reverse_meta_as_index].argmax(dim=1) == truth_label_index_tile)
+    _, top3_index = torch.topk(tile_sel[reverse_meta_as_index], 3)
+    acc2_top2 = 0
+    for id in range(0, 2):
+        acc2_top2 += sum(top3_index[:, id] == truth_label_index_tile)
+    acc2_top3 = 0
+    for id in range(0, 3):
+        acc2_top3 += sum(top3_index[:, id] == truth_label_index_tile)
+    acc2_total = len(reverse_meta_as_index)
+
+    regular = 1e-2 * torch.sum((fan_coeff - torch.abs(fan_coeff)) ** 2)
+
+    return (1 * term1 + term2) / len(meta) + regular, (
+        acc1_total,
+        acc1,
+        acc1_top2,
+        acc1_top3,
+        acc2_total,
+        acc2,
+        acc2_top2,
+        acc2_top3,
+    )
+
+def loss_calc(
+    meta, index_list_plus_one, label_action, label_tile, action, tile_sel
+):
+    # label_action, label_tile = label_action.float(), label_tile.float()
+
+    action = torch.log(F.softmax(action, dim=1))
+    tile_sel = torch.log(F.softmax(tile_sel, dim=1))
+
+    meta_as_index = index_list_plus_one * meta
+    reverse_meta_as_index = index_list_plus_one * (1 - meta)
+    meta_as_index = meta_as_index[meta_as_index > 0] - 1
+    reverse_meta_as_index = reverse_meta_as_index[reverse_meta_as_index > 0] - 1
+
+    summed_log = torch.tensor(0.)
+    total_entry_count = len(meta)
+
+    for i in range(len(meta)):
+        if i in meta_as_index:
+            # continue
+            # # action
+            # gg=
+            summed_log += action[i][label_action[i].argmax(dim=0)]
+        else:
+            #tile
+            gg=tile_sel[i][label_tile[i].argmax(dim=0)]
+            summed_log += gg if gg.item() > -100 and gg.item()<0.1 else 0
+
+
+    return summed_log, total_entry_count
+
+def workload(
+    network,
+    begin_ratio,
+    end_ratio,
+    batch_size,
+    data_worker_ct,
+    epoch_it,
+    device,
+    optimizer,
+    writer,
+    log_dir,
+    data_folder_name,
+    is_training=True,
+    persistent_validation_set=True,
+    validation_DS=None,
+    validation_loader=None,
+):
+    """
+    iteration:                  iteration in epoch
+    begin/end_ratio:               training/validation set's range (0.0-1.0)
+    persistent_validation_DS:   make validation set persistent in RAM,
+                                which consumes more ram, but speeds up validation
+                                set to True and is_training set to False, will nullify begin/end ratio
+    validation_DS:              pre-loaded validation dataset
+    validation_loader:          pre-loaded validation loader
+    """
+    global validation_acc
+    global validation_acc_top2
+    global validation_acc_top3
+    loss_acc = 0
+    loss_length = 0
+
+    if is_training:
+        network.train()
+        mahjongDS = MahjongSLDataset(data_folder_name, begin_ratio, end_ratio)
+        loader = DataLoader(
+            dataset=mahjongDS,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=data_worker_ct,
+        )
+    else:
+        network.eval()
+        if persistent_validation_set:
+            mahjongDS = validation_DS
+            loader = validation_loader
+        else:
+            mahjongDS = MahjongSLDataset(data_folder_name, begin_ratio, end_ratio)
+            loader = DataLoader(
+                dataset=mahjongDS,
+                batch_size=batch_size,
+                shuffle=False,
+                num_workers=data_worker_ct,
+            )
+
+    loss_list = []
+    action_total = 0
+    action_acc = 0
+    action_acc_top2 = 0
+    action_acc_top3 = 0
+    tile_total = 0
+    tile_acc = 0
+    tile_acc_top2 = 0
+    tile_acc_top3 = 0
+    for i, d in enumerate(
+        tqdm(loader, leave=False, desc="Training: " if is_training else "Validating: ")
+    ):
+        (
+            meta,
+            meta_feature_new,
+            tile_wall_feature,
+            k,
+            q,
+            m,
+            n,
+            o,
+            # fan_summary,
+            label_action,
+            label_tile,
+            v_info,
+        ) = d
+
+        (
+            meta,
+            meta_feature_new,
+            tile_wall_feature,
+            k,
+            q,
+            m,
+            n,
+            o,
+            # fan_summary,
+            label_action,
+            label_tile,
+        ) = (
+            meta.to(device),
+            meta_feature_new.to(device),
+            tile_wall_feature.to(device),
+            k.to(device),
+            q.to(device),
+            m.to(device),
+            n.to(device),
+            o.to(device),
+            # data_description.to(device).float(),
+            # fan_summary.to(device),
+            label_action.to(device),
+            label_tile.to(device),
+        )
+        data1 = (k, q, m, n, o)
+
+        index_list_plus_one = torch.tensor([i + 1 for i in range(len(meta))]).to(device)
+        x = (
+            meta_feature_new,
+            tile_wall_feature,
+            data1,
+        )
+
+        if is_training:
+            optimizer.zero_grad(set_to_none=True)
+            action, tile_choice = network(x)
+            loss, acc = loss_acc_batched(
+                meta,
+                index_list_plus_one,
+                label_action,
+                label_tile,
+                action,
+                tile_choice,
+                network.access_fan(),
+            )
+            loss.backward()
+            loss_list.append(loss.item())
+            (
+                action_tot,
+                action_ac,
+                action_ac_top2,
+                action_ac_top3,
+                tile_tot,
+                tile_ac,
+                tile_ac_top2,
+                tile_ac_top3,
+            ) = acc
+            action_total += action_tot
+            action_acc += action_ac
+            tile_total += tile_tot
+            tile_acc += tile_ac
+            optimizer.step()
+        else:
+            with torch.no_grad():
+                action, tile_choice = network(x)
+                loss, length_ct = loss_calc(
+                    meta,
+                    index_list_plus_one,
+                    label_action,
+                    label_tile,
+                    action,
+                    tile_choice,
+                )
+                loss_acc+=loss
+                loss_length+=length_ct
+    print(loss_acc, loss_length)
+
+
+if __name__ == "__main__":
+    config_dir = "supervised_learning_v4/configs/"
+    logdir = "log/"
+    data_name = "checkpoint/best_v_loss.pkl"
+    torch.manual_seed(3407)
+
+    if len(sys.argv) > 1:
+        config_file_path = os.path.join(config_dir, sys.argv[1])
+        with open(config_file_path) as f:
+            config = json.load(f)
+    else:
+        print("Requires config file for training")
+        print("Using Default config")
+        config = {
+            "target_lr": 0.007,
+            "lr_decay": 0.985,
+            "splitRatio": 0.985,
+            "batchSize": 256,
+            "epoch_split": 30,
+            "epoch_total": 4,
+            "n_gpu": 1,
+            "main_gpu_id": 5,
+            "number_warmup_epochs": 4,
+            "num_dataloader": 4,
+            "data_folder_name": "sl_prep_simple_7p_rev6",
+            "note": "model_slim_rev6_normed2_c",
+        }
+        print(config)
+
+    target_lr = config["target_lr"]
+    lr_decay = config["lr_decay"]
+    splitRatio = config["splitRatio"]
+    batchSize = config["batchSize"]
+    epoch_split = config["epoch_split"]
+    epoch_total = config["epoch_total"]
+    n_gpu = config["n_gpu"]
+    main_gpu_id = config["main_gpu_id"]
+    number_warmup_epochs = config["number_warmup_epochs"]
+    num_dataloader = config["num_dataloader"]
+    data_folder_name = config["data_folder_name"]
+    note = config["note"]
+
+    log_name = "07_22_03_21_12-model_slim_7p_normed"
+
+    # typically leave as is
+    logdir = "log/"
+    log_suffix = "checkpoint"
+
+    weight_list = {
+        "top1": "best_acc.pkl",
+        "top2": "best_acc_top2.pkl",
+        "top3": "best_acc_top3.pkl",
+    }
+
+
+    now = datetime.datetime.now()
+    run_summary_dir = os.path.join(
+        logdir, "{}-{}".format(now.strftime("%m_%d_%H_%M_%S"), note)
+    )
+    writer = SummaryWriter(run_summary_dir)
+    if len(sys.argv) > 1:
+        shutil.copy(config_file_path, run_summary_dir)
+
+    # prepare log dir
+    if not os.path.exists(os.path.join(run_summary_dir, "checkpoint")):
+        os.makedirs(os.path.join(run_summary_dir, "checkpoint"))
+
+    device, device_ids = prepare_device(n_gpu, main_gpu_id)
+    device = 'cpu'
+
+    # Pre-load validation dataset
+    vDS = MahjongSLDataset(data_folder_name, splitRatio, 1)
+    vloader = DataLoader(
+        dataset=vDS, batch_size=batchSize, shuffle=False, num_workers=num_dataloader
+    )
+    nn = MahJongNetBatchedRevised(device).to(device)
+    optimizer = torch.optim.Adam(nn.parameters(), lr=target_lr)
+
+    nn.load_state_dict(
+    torch.load(
+        os.path.join(logdir, log_name, log_suffix, weight_list["top3"]),
+            map_location=torch.device(device),
+        )
+    )
+
+
+    # validation
+    workload(
+        nn,
+        splitRatio,
+        1,
+        batchSize,
+        num_dataloader,
+        0,
+        device,
+        optimizer,
+        writer,
+        run_summary_dir,
+        data_folder_name,
+        False,
+        True,
+        vDS,
+        vloader,
+    )
+
+    writer.close()
