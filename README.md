@@ -24,3 +24,9 @@ Search component code in python
 ## search_component_c/
 Search component code in C++ for more efficient computation. 
 C++ code has been compiled to fanCalcLib.so for Python 3.6 and FanCalcLibPy39.so for Python 3.9
+
+## toy_example/
+Codes for blackjeck and mountain car examples
+
+## method_comparisons/
+Codes for traditional neural network and random forest
